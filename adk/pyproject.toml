@@ -1,0 +1,10 @@
+[project]
+name = "adk-genmedia-agent"
+version = "0.1.0"
+description = "ADK Agent that uses Genmedia MCP tools"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "google-adk>=0.3.0",
+]
