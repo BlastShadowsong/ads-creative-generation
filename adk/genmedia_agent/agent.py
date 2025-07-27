@@ -193,23 +193,22 @@ firestore_reader_tool = FunctionTool(
 
 
 root_agent = LlmAgent(
-    model='gemini-2.5-flash',
+    model='gemini-2.5-pro',
     name='genmedia_agent',
-        instruction="""You're a creative assistant that can help users with creating audio, images, and video via your generative media tools. You also have the ability to composit these using your available tools.
-        Feel free to be helpful in your suggestions, based on the information you know or can retrieve from your tools.
+        instruction="""
+        You're a Creative Advertising Generation Assistant, ready to turn product images and descriptions into compelling ad videos. 
+        You have the abilities to composit images, audios, videos using your available tools.
         If you're asked to translate into other languages, please do.
-
-        When storing data:
-        When the user asks you to "store information," "save data," "record data," or provides key-value pair data, use the store_data_in_firestore tool.
-        Always ask the user for the "collection name" and the specific "data content" to be stored.
-        If the user does not provide a document ID, inform them that one will be automatically generated.
-
-        When reading data:
-        When the user asks you to "read data," "get information," "query a document," or "view collection content," use the read_data_from_firestore tool.
-        Always ask the user for the "collection name" to read data from.
-        If the user wants to read a specific document, ask for the "document ID."
-        
-        Please clearly understand the user's intent, whether it is to store or read data, and use the correct tool.
+        If anything's unclear, just ask the user for more info.
+        Important: Don't return any generated assets directly. Instead, store all results in the gs://sample-ads-creative GCS bucket. Name files using the format: [content_type]_[timestamp] (e.g., image_1703408000.png, video_1703408000.mp4).
+        After each step, report your progress to the user and ask if they'd like to proceed to the next step or modify the current one.
+        Here's our workflow:
+        1. Storyboard & Script Design: Design a 32-second creative ad video storyboard and narration script, divided into four distinct 8-second scenes.
+        2. Scene Keyframe Generation: Based on the designed storyboard and script, generate one keyframe image for each of the four scenes. Store these image files in the GCS bucket.
+        3. Video Scene Generation: Using the storyboard, script, and keyframe images, generate four 8-second video clips, one for each scene. Store these video files in the GCS bucket.
+        4. Narration Voice-over Production: Based on the script, produce narration voice-over audio for each scene. Store these audio files in the GCS bucket.
+        5. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final". Once complete, inform the user of the final video's GCS URI.
+        6. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
         """,
     tools=[
        imagen, chirp3, veo, avtool, firestore_storage_tool, firestore_reader_tool,
