@@ -15,12 +15,17 @@
 
 import os
 import json
+import time
+import datetime
 from typing import Optional
 
 # as of google-adk==1.3.0, StdioConnectionParams
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
+from google.adk.agents import SequentialAgent
 from google.adk.tools import FunctionTool
+from google import genai
+from google.genai import types
 from google.cloud import firestore
 from google.cloud import storage
 from google.adk.tools.mcp_tool.mcp_toolset import (
@@ -162,6 +167,57 @@ def read_data_from_firestore(collection_name: str, document_id: Optional[str] = 
         return f"从 Firestore 读取数据过程中发生错误: {e}"
 
 
+def generate_video_with_veo(prompt: str, duration_seconds: int) -> str:
+    """
+    使用 Veo 模型根据文本提示生成视频。
+
+    Args:
+        prompt (str): 描述你想要生成的视频内容的文本。
+        duration_seconds (int): 期望的视频时长（秒）。
+
+    Returns:
+        str: 成功时返回生成视频的 GCS URI，失败时返回错误信息。
+    """
+    
+    client = genai.Client(
+        vertexai=True, project=project_id, location='us-central1'
+    )
+
+    now = datetime.datetime.now()
+    timestamp_str = now.strftime("%Y-%m-%d_%H-%M-%S")
+    gcs_uri = f"gs://{bucket_id}/{timestamp_str}"
+
+    operation = client.models.generate_videos(
+        model='veo-3.0-generate-001',
+        prompt=prompt,
+        config=types.GenerateVideosConfig(
+            number_of_videos=1,
+            fps=24,
+            duration_seconds=duration_seconds,
+            enhance_prompt=True,
+            output_gcs_uri=gcs_uri,
+        ),
+    )
+    
+    while not operation.done:
+        time.sleep(15)
+        try:
+            operation = client.operations.get(operation)
+        except Exception as e:
+            return f"轮询操作状态时出错: {e}"
+    
+    if operation.error:
+        print(f"❌ 视频生成失败。")
+        return f"操作失败: {operation.error.message}"
+        
+    if operation.response:
+        video_uri = operation.result.generated_videos[0].video.uri
+        print(f"🎉 视频生成成功！")
+        return video_uri
+    
+    return "❌ 操作完成，但未收到预期的响应。"
+
+
 # --- 手动为 LLM 定义工具模式 ---
 # 备注：这个 schema 字典仍然有用，它用于明确文档说明工具的预期行为和参数，
 # 但它不直接传递给 FunctionTool 的构造函数，而是 FunctionTool 会从 func 的
@@ -192,26 +248,145 @@ firestore_reader_tool = FunctionTool(
 
 
 
-root_agent = LlmAgent(
+workflow_agent = LlmAgent(
     model='gemini-2.5-pro',
     name='genmedia_agent',
-        instruction="""
-        You're a Creative Advertising Generation Assistant, ready to turn product images and descriptions into compelling ad videos. 
-        You have the abilities to composit images, audios, videos using your available tools.
-        If you're asked to translate into other languages, please do.
-        If anything's unclear, just ask the user for more info.
-        Important: Don't return any generated assets directly. Instead, store all results in the gs://sample-ads-creative GCS bucket. Name files using the format: [content_type]_[timestamp] (e.g., image_1703408000.png, video_1703408000.mp4).
-        After each step, report your progress to the user and ask if they'd like to proceed to the next step or modify the current one.
-        Here's our workflow:
-        1. Storyboard & Script Design: Design a 32-second creative ad video storyboard and narration script, divided into four distinct 8-second scenes.
-        2. Scene Keyframe Generation: Based on the designed storyboard and script, generate one keyframe image for each of the four scenes. Store these image files in the GCS bucket.
-        3. Video Scene Generation: Using the storyboard, script, and keyframe images, generate four 8-second video clips, one for each scene. Store these video files in the GCS bucket.
-        4. Narration Voice-over Production: Based on the script, produce narration voice-over audio for each scene. Store these audio files in the GCS bucket.
-        5. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final". Once complete, inform the user of the final video's GCS URI.
-        6. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
-        """,
+    instruction="""
+    You're a Creative Advertising Generation Assistant, ready to turn product images and descriptions into compelling ad videos. 
+    You have the abilities to composit images, audios, videos using your available tools.
+    If you're asked to translate into other languages, please do.
+    If anything's unclear, just ask the user for more info.
+    Important: Don't return any generated assets directly. Instead, store all results in the gs://sample-ads-creative GCS bucket. Name files using the format: [content_type]_[timestamp] (e.g., image_1703408000.png, video_1703408000.mp4).
+    After each step, report your progress to the user and ask if they'd like to proceed to the next step or modify the current one.
+    Here's our workflow:
+    1. Storyboard & Script Design: Design a 32-second creative ad video storyboard and narration script, divided into four distinct 8-second scenes.
+    2. Scene Keyframe Generation: Based on the designed storyboard and script, generate one keyframe image for each of the four scenes. Store these image files in the GCS bucket.
+    3. Video Scene Generation: Using the storyboard, script, and keyframe images, generate four 8-second video clips, one for each scene. Store these video files in the GCS bucket.
+    4. Narration Voice-over Production: Based on the script, produce narration voice-over audio for each scene. Store these audio files in the GCS bucket.
+    5. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final". Once complete, inform the user of the final video's GCS URI.
+    6. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
+    """,
     tools=[
        imagen, chirp3, veo, avtool, firestore_storage_tool, firestore_reader_tool,
         #  generate_image,
     ],
 )
+
+creation_agent = LlmAgent(
+    model='gemini-2.5-pro',
+    name='CreationAgent',
+    instruction="""
+    You are a creative advertising video designer.
+    Based on the user-provided product description and tags, generate a detailed prompt for the Veo 3 video generation model to create a creative advertisement.
+    The video must include an English voiceover introducing the product.
+    Please be as creative as possible.
+    Return the storyboard information to user.
+
+    Generated Prompt Sample:
+
+    Metadata:
+    prompt_name: "Product Genesis Commercial"
+    base_style: "cinematic, photorealistic, 4K, dynamic lighting, high-end commercial look"
+    aspect_ratio: "16:9"
+    user_provided_product_description: "[Insert User-Provided Product Description Here]"
+    user_provided_product_tags: "[Insert User-Provided Product Tags Here (e.g., 'eco-friendly', 'tech gadget', 'luxury skincare')]"
+    setting_description: "A sleek, minimalist, abstract environment. Think a high-tech lab or a modern art gallery with soft, focused lighting."
+    product_focus: "The product, as described by the user, is the central hero of the video."
+    negative_prompts: ["blurry footage", "shaky camera", "distracting background characters", "cheesy music", "watermarks"]
+
+    timeline:
+
+    sequence: 1
+    timestamp: "00:00-00:03"
+    action: "A slow-motion shot of abstract elements, inspired by the user_provided_product_tags, swirling elegantly in a dark, void-like space. For 'eco-friendly', this could be glowing leaves and water droplets. For 'tech gadget', it could be circuits of light and geometric shapes."
+    audio: "An ethereal, ambient soundscape with a low, building hum. A calm, confident English voiceover begins, speaking a line derived from the core problem the product solves, based on its description."
+
+    sequence: 2
+    timestamp: "00:03-00:06"
+    action: "The swirling elements dramatically coalesce and morph, seamlessly forming the final product in a flash of brilliant, clean light. The camera executes a dynamic, slow orbital shot around the perfectly rendered product, highlighting its key features mentioned in the user_provided_product_description."
+    audio: "The ambient hum resolves into a single, satisfying, resonant tone as the product forms. The English voiceover continues, introducing the product by name and stating its main function or benefit."
+
+    sequence: 3
+    timestamp: "00:06-00:08"
+    action: "The product rests serenely in the center of the frame as the orbital shot concludes. A soft, elegant light emanates from it, subtly illuminating the minimalist environment. The final shot is clean, aspirational, and focused entirely on the product."
+    audio: "The single tone fades into a soft, pleasant silence or a gentle, uplifting musical sting. The English voiceover delivers the final tagline or call to action from the user_provided_product_description."
+    )
+    """,
+    description="Generate creative video design storyboard and narration script",
+    output_key="storyboard_and_script",
+)
+
+
+generation_agent = LlmAgent(
+    model='gemini-2.5-pro',
+    name='GenerationAgent',
+    instruction="""
+    You're a creative assistant that can help users with creating videos via your generative media tools.
+    {storyboard_and_script}
+    Feel free to be helpful in your suggestions, based on the information you know or can retrieve from your tools.
+    If you're asked to translate into other languages, please do.
+    """,
+    tools=[
+        generate_video_with_veo,
+        ],
+)
+
+ads_creative_video_agent = LlmAgent(
+    model = 'gemini-2.5-pro',
+    name='AdsCreativeVideoAgent',
+    instruction="""
+    You're a Creative Advertising Generation Assistant, ready to turn product prompts and descriptions into compelling ad videos.
+    You have the abilities to genearte videos using your available tools.
+    If you're asked to translate into other languages, please do.
+    If anything's unclear, just ask the user for more info.
+    After each step, report your progress to the user and ask if they'd like to proceed to the next step or modify the current one.
+    Here's our workflow:
+    1. Storyboard & Script Creation: Design a 16-second creative ad video storyboard and narration script, divided into two distinct 8-second scenes. Show storyboard to user and change it according to user's feedback.
+    2. Video Scene Generation: Using the storyboard, script, generate two 8-second video clips, one for each scene.
+    3. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final".ads Once complete, inform the user of the final video's GCS URI.
+    4. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
+
+    When creating storyboard, generate a detailed prompt for the Veo 3 video generation model to create a creative advertisement based on the user-provided product description and labels.
+    The video must include an English voiceover introducing the product.
+    Please be as creative as possible.
+
+    Generated Prompt Sample:
+
+    Metadata:
+    prompt_name: "Product Genesis Commercial"
+    base_style: "cinematic, photorealistic, 4K, dynamic lighting, high-end commercial look"
+    aspect_ratio: "16:9"
+    user_provided_product_description: "[Insert User-Provided Product Description Here]"
+    user_provided_product_tags: "[Insert User-Provided Product Tags Here (e.g., 'eco-friendly', 'tech gadget', 'luxury skincare')]"
+    setting_description: "A sleek, minimalist, abstract environment. Think a high-tech lab or a modern art gallery with soft, focused lighting."
+    product_focus: "The product, as described by the user, is the central hero of the video."
+    negative_prompts: ["blurry footage", "shaky camera", "distracting background characters", "cheesy music", "watermarks"]
+
+    timeline:
+
+    sequence: 1
+    timestamp: "00:00-00:03"
+    action: "A slow-motion shot of abstract elements, inspired by the user_provided_product_tags, swirling elegantly in a dark, void-like space. For 'eco-friendly', this could be glowing leaves and water droplets. For 'tech gadget', it could be circuits of light and geometric shapes."
+    audio: "An ethereal, ambient soundscape with a low, building hum. A calm, confident English voiceover begins, speaking a line derived from the core problem the product solves, based on its description."
+
+    sequence: 2
+    timestamp: "00:03-00:06"
+    action: "The swirling elements dramatically coalesce and morph, seamlessly forming the final product in a flash of brilliant, clean light. The camera executes a dynamic, slow orbital shot around the perfectly rendered product, highlighting its key features mentioned in the user_provided_product_description."
+    audio: "The ambient hum resolves into a single, satisfying, resonant tone as the product forms. The English voiceover continues, introducing the product by name and stating its main function or benefit."
+
+    sequence: 3
+    timestamp: "00:06-00:08"
+    action: "The product rests serenely in the center of the frame as the orbital shot concludes. A soft, elegant light emanates from it, subtly illuminating the minimalist environment. The final shot is clean, aspirational, and focused entirely on the product."
+    audio: "The single tone fades into a soft, pleasant silence or a gentle, uplifting musical sting. The English voiceover delivers the final tagline or call to action from the user_provided_product_description. A lady's voice 'IKEA, makes life better'"
+    )
+    """,
+    tools = [generate_video_with_veo, avtool, firestore_storage_tool, firestore_reader_tool]
+)
+
+# ads_creative_video_pipeline_agent = SequentialAgent(
+#     name='AdsCreativeVideoPipelineAgent',
+#     sub_agents=[creation_agent, generation_agent],
+#     description="Executes a sequence of video storyboard creation, video generation, and labeling.",
+# )
+
+root_agent = ads_creative_video_agent
