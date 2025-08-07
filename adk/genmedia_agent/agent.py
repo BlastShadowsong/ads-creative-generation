@@ -18,12 +18,14 @@ import json
 import time
 import datetime
 from typing import Optional
+import vertexai
 
 # as of google-adk==1.3.0, StdioConnectionParams
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
 from google.adk.agents import SequentialAgent
 from google.adk.tools import FunctionTool
+from vertexai.preview.vision_models import ImageGenerationModel
 from google import genai
 from google.genai import types
 from google.cloud import firestore
@@ -76,14 +78,6 @@ imagen = MCPToolset(
         timeout=60,
     ),
 )
-
-# MCP Client (SSE)
-# assumes you've started the MCP server separately
-# e.g. mcp-imagen-go --transport sse
-# from google.adk.tools.mcp_tool.mcp_toolset import SseServerParams
-# remote_imagen, _ = MCPToolset(
-#     connection_params=SseServerParams(url="http://localhost:8080/sse"),
-# )
 
 avtool = MCPToolset(
     connection_params=StdioConnectionParams(
@@ -167,6 +161,38 @@ def read_data_from_firestore(collection_name: str, document_id: Optional[str] = 
         return f"从 Firestore 读取数据过程中发生错误: {e}"
 
 
+def generate_image_with_imagen(prompt: str) -> str:
+    """
+    Generate image using Imagen 4 based on prompt.
+
+    Args:
+        prompt (str): text description of the image content you want to generate
+    
+    Returns:
+        str: return GCS URI when succeed, otherwise return error message
+    """
+
+    vertexai.init(project=project_id, location="us-central1")
+    now = datetime.datetime.now()
+    timestamp_str = now.strftime("%Y-%m-%d_%H-%M-%S")
+    gcs_uri = f"gs://{bucket_id}/images/{timestamp_str}"
+
+    generation_model = ImageGenerationModel.from_pretrained("imagen-4.0-generate-preview-06-06")
+
+    operation = generation_model.generate_images(
+        prompt=prompt,
+        number_of_images=1,
+        aspect_ratio="16:9",
+        negative_prompt="",
+        person_generation="allow_all",
+        safety_filter_level="block_few",
+        add_watermark=True,
+        output_gcs_uri=gcs_uri
+    )
+
+    return gcs_uri
+
+
 def generate_video_with_veo(prompt: str, duration_seconds: int) -> str:
     """
     使用 Veo 模型根据文本提示生成视频。
@@ -185,7 +211,7 @@ def generate_video_with_veo(prompt: str, duration_seconds: int) -> str:
 
     now = datetime.datetime.now()
     timestamp_str = now.strftime("%Y-%m-%d_%H-%M-%S")
-    gcs_uri = f"gs://{bucket_id}/{timestamp_str}"
+    gcs_uri = f"gs://{bucket_id}/videos/{timestamp_str}"
 
     operation = client.models.generate_videos(
         model='veo-3.0-generate-001',
@@ -218,25 +244,6 @@ def generate_video_with_veo(prompt: str, duration_seconds: int) -> str:
     return "❌ 操作完成，但未收到预期的响应。"
 
 
-# --- 手动为 LLM 定义工具模式 ---
-# 备注：这个 schema 字典仍然有用，它用于明确文档说明工具的预期行为和参数，
-# 但它不直接传递给 FunctionTool 的构造函数，而是 FunctionTool 会从 func 的
-# 签名和 docstring 中推断模式。
-firestore_tool_schema = {
-    "name": "store_data_in_firestore",
-    "description": "Stores a piece of structured data (like product details, ad campaign tags, or customer feedback) into a specified Google Firestore collection. You can provide a specific document ID or let Firestore generate one automatically.",
-    "parameters": {
-        "type": "object", # 使用 object 类型表示字典
-        "description": "The data to store as a new document in the collection. This should be a JSON-serializable dictionary with key-value pairs (e.g., {'name': 'Laptop', 'price': 1200, 'tags': ['electronics', 'new']}).",
-        "additionalProperties": True # 允许动态键值对，不强制预定义所有属性
-    },
-    "document_id": {
-        "type": "string",
-        "description": "Optional: A specific ID for the document. If not provided, Firestore will auto-generate one.",
-        "nullable": True # 标记为可空
-    }
-}
-
 # --- 创建 FunctionTool 实例 ---
 firestore_storage_tool = FunctionTool(
     func=store_data_in_firestore
@@ -245,7 +252,6 @@ firestore_storage_tool = FunctionTool(
 firestore_reader_tool = FunctionTool(
     func=read_data_from_firestore
 )
-
 
 
 workflow_agent = LlmAgent(
@@ -341,10 +347,11 @@ ads_creative_video_agent = LlmAgent(
     If anything's unclear, just ask the user for more info.
     After each step, report your progress to the user and ask if they'd like to proceed to the next step or modify the current one.
     Here's our workflow:
-    1. Storyboard & Script Creation: Design a 16-second creative ad video storyboard and narration script, divided into two distinct 8-second scenes. Show storyboard to user and change it according to user's feedback.
-    2. Video Scene Generation: Using the storyboard, script, generate two 8-second video clips, one for each scene.
-    3. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final".ads Once complete, inform the user of the final video's GCS URI.
-    4. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
+    1. Storyboard & Script Creation: Design a 16-second creative ad video storyboard and narration script, divided into two distinct 8-second scenes. Each scene has multiple sequences. Then design a description for first-frame image. Show storyboard and first-frame image description to user and change it according to user's feedback.
+    2. First-frame Image Generation: Using the first-frame image description to generate an image.
+    3. Video Scene Generation: Using the storyboard, script, generate two 8-second video clips, one for each scene.
+    4. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final".ads Once complete, inform the user of the final video's GCS URI.
+    5. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
 
     When creating storyboard, generate a detailed prompt for the Veo 3 video generation model to create a creative advertisement based on the user-provided product description and labels.
     The video must include an English voiceover introducing the product.
@@ -379,8 +386,15 @@ ads_creative_video_agent = LlmAgent(
     action: "The product rests serenely in the center of the frame as the orbital shot concludes. A soft, elegant light emanates from it, subtly illuminating the minimalist environment. The final shot is clean, aspirational, and focused entirely on the product."
     audio: "The single tone fades into a soft, pleasant silence or a gentle, uplifting musical sting. The English voiceover delivers the final tagline or call to action from the user_provided_product_description. A lady's voice 'IKEA, makes life better'"
     )
+
+
+    When generate tags for final video, analyze the video and generate three distinct categories of ad tags:
+    Content Tags: Describe the visible objects, people, and locations (e.g., 'car', 'city street', 'young professionals').
+    Emotional/Thematic Tags: Capture the video's mood and underlying message (e.g., 'thrilling', 'nostalgic', 'friendship', 'determination').
+    Stylistic Tags: Describe the visual and auditory aesthetic (e.g., 'vintage film look', 'high-energy music', 'fast-paced editing').
+    Please provide a list of 5-10 tags for each category based on the video's content.
     """,
-    tools = [generate_video_with_veo, avtool, firestore_storage_tool, firestore_reader_tool]
+    tools = [generate_image_with_imagen, generate_video_with_veo, avtool, firestore_storage_tool, firestore_reader_tool]
 )
 
 # ads_creative_video_pipeline_agent = SequentialAgent(
