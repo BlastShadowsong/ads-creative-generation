@@ -10,7 +10,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-# limitations under the License.
+# limitations under the License.ccd
 
 
 import os
@@ -42,42 +42,10 @@ project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
 bucket_id = os.getenv("GCS_BUCKET_NAME")
 firestore_database_id = os.getenv("FIRESTORE_DATABASE_ID")
 
-# --- 初始化 Firestore 客户端 ---
-# Firestore 客户端将使用与 Cloud Run 服务关联的服务账户进行认证。
-# 确保你的服务账户拥有访问 Firestore 的权限。
 db = firestore.Client(project=project_id, database=firestore_database_id)
 
 # MCP Client (STDIO)
 # assumes you've installed the MCP server on your path
-veo = MCPToolset(
-    connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="mcp-veo-go",
-            env=dict(os.environ, PROJECT_ID=project_id),
-        ),
-        timeout=60,
-    ),
-)
-
-chirp3 = MCPToolset(
-    connection_params=StdioConnectionParams(
-            server_params=StdioServerParameters(
-                command="mcp-chirp3-go",
-                env=dict(os.environ, PROJECT_ID=project_id),
-            ),
-            timeout=60,
-    ),
-)
-
-imagen = MCPToolset(
-    connection_params=StdioConnectionParams(
-        server_params=StdioServerParameters(
-            command="mcp-imagen-go",
-            env=dict(os.environ, PROJECT_ID=project_id),
-        ),
-        timeout=60,
-    ),
-)
 
 avtool = MCPToolset(
     connection_params=StdioConnectionParams(
@@ -89,76 +57,77 @@ avtool = MCPToolset(
     ),
 )
 
+
 def store_data_in_firestore(collection_name: str, document_data: dict, document_id: Optional[str] = None) -> str:
     """
-    将结构化数据存储到指定的 Firestore 集合中。
+    Store data into Firestore collections.
     Args:
-        collection_name: 数据的 Firestore 集合名称（例如，'products', 'ad_campaigns', 'customer_feedback'）。
-        document_data: 要存储为新文档的数据。这应该是一个 JSON 可序列化的字典，包含键值对。
-        document_id: 可选：文档的特定 ID。如果未提供，Firestore 将自动生成一个。
-    Returns：
-        包含存储操作结果的字符串消息，包括文档ID。
+        collection_name: The Firestore collection name for the data (e.g., 'products', 'ad_campaigns', 'customer_feedback').
+        document_data: The data to be stored as a new document. This should be a JSON-serializable dictionary containing key-value pairs.
+        document_id: Optional: A specific ID for the document. If not provided, Firestore will automatically generate one.
+    Returns:
+        A string message containing the result of the storage operation, including the document ID.
     """
     try:
-        # 验证 document_data 是否是字典且可序列化
+        # Validate that document_data is a dictionary and is serializable.
         if not isinstance(document_data, dict):
-            return "错误：要存储的数据必须是字典格式。"
+            return "Error: The data to be stored must be in dictionary format."
         
-        # 移除了 json.dumps() 检查。
-        # Firestore SDK 会直接处理 Python 字典到 Firestore 文档的写入。
-        # 复杂类型（如嵌套列表、自定义对象）可能需要手动序列化为字符串再存储。
+        # The check for json.dumps() has been removed.
+        # The Firestore SDK handles the direct writing of Python dictionaries to Firestore documents.
+        # Complex types (like nested lists, custom objects) may require manual serialization to a string before storing.
         
         collection_ref = db.collection(collection_name)
 
         if document_id:
-            # 如果指定了文档ID，则使用 set() 方法，会覆盖现有文档
+            # If a document ID is specified, use the set() method, which will overwrite any existing document.
             doc_ref = collection_ref.document(document_id)
             doc_ref.set(document_data)
-            return f"数据已成功存储在集合 '{collection_name}' 中，文档 ID 为 '{document_id}'。"
+            return f"Data successfully stored in collection '{collection_name}' with document ID '{document_id}'."
         else:
-            # 如果未指定文档ID，则使用 add() 方法，Firestore 会自动生成一个ID
-            doc_ref = collection_ref.add(document_data)[1] # add() 返回 (timestamp, DocumentReference)
-            return f"数据已成功存储在集合 '{collection_name}' 中，自动生成的文档 ID 为 '{doc_ref.id}'。"
+            # If no document ID is specified, use the add() method, and Firestore will automatically generate an ID.
+            doc_ref = collection_ref.add(document_data)[1] # add() returns (timestamp, DocumentReference)
+            return f"Data successfully stored in collection '{collection_name}' with auto-generated document ID '{doc_ref.id}'."
 
     except Exception as e:
-        print(f"存储数据到 Firestore 过程中发生错误: {e}")
-        return f"存储数据到 Firestore 过程中发生错误: {e}"
+        print(f"An error occurred while storing data to Firestore: {e}")
+        return f"An error occurred while storing data to Firestore: {e}"
 
-# --- 定义 Firestore 读取工具函数 ---
+
 def read_data_from_firestore(collection_name: str, document_id: Optional[str] = None) -> str:
     """
-    从 Firestore 数据库中读取一个或多个文档。
-    如果提供了文档ID，则读取特定文档。否则，读取集合中的所有文档。
+    Reads one or more documents from the Firestore database.
+    If a document ID is provided, reads a specific document. Otherwise, reads all documents in the collection.
     Args:
-        collection_name: 要读取数据的 Firestore 集合名称。
-        document_id: 可选：要读取的特定文档的ID。
+        collection_name: The name of the Firestore collection to read from.
+        document_id: Optional; The ID of the specific document to read.
     Returns:
-        包含读取结果的字符串消息（JSON格式的数据或错误消息）。
+        A string message containing the read results (JSON-formatted data or an error message).
     """
     try:
         if document_id:
-            # 读取特定文档
+            # Read a specific document
             doc_ref = db.collection(collection_name).document(document_id)
             doc = doc_ref.get()
             if doc.exists:
-                return f"在集合 '{collection_name}' 中找到文档 '{document_id}': {json.dumps(doc.to_dict(), indent=2, ensure_ascii=False)}"
+                return f"Document '{document_id}' found in collection '{collection_name}': {json.dumps(doc.to_dict(), indent=2, ensure_ascii=False)}"
             else:
-                return f"在集合 '{collection_name}' 中未找到文档 '{document_id}'。"
+                return f"Document '{document_id}' not found in collection '{collection_name}'."
         else:
-            # 读取集合中的所有文档
+            # Read all documents in the collection
             docs = db.collection(collection_name).stream()
             results = []
             for doc in docs:
                 results.append({"id": doc.id, "data": doc.to_dict()})
             
             if results:
-                return f"在集合 '{collection_name}' 中找到以下文档: {json.dumps(results, indent=2, ensure_ascii=False)}"
+                return f"Found the following documents in collection '{collection_name}': {json.dumps(results, indent=2, ensure_ascii=False)}"
             else:
-                return f"集合 '{collection_name}' 中没有找到任何文档。"
+                return f"No documents found in collection '{collection_name}'."
 
     except Exception as e:
-        print(f"从 Firestore 读取数据过程中发生错误: {e}")
-        return f"从 Firestore 读取数据过程中发生错误: {e}"
+        print(f"An error occurred while reading from Firestore: {e}")
+        return f"An error occurred while reading from Firestore: {e}"
 
 
 def generate_image_with_imagen(prompt: str) -> str:
@@ -195,14 +164,14 @@ def generate_image_with_imagen(prompt: str) -> str:
 
 def generate_video_with_veo(prompt: str, duration_seconds: int) -> str:
     """
-    使用 Veo 模型根据文本提示生成视频。
+    Generates a video from a text prompt using the Veo model.
 
     Args:
-        prompt (str): 描述你想要生成的视频内容的文本。
-        duration_seconds (int): 期望的视频时长（秒）。
+        prompt (str): The text description of the video you want to generate.
+        duration_seconds (int): The desired duration of the video in seconds.
 
     Returns:
-        str: 成功时返回生成视频的 GCS URI，失败时返回错误信息。
+        str: The GCS URI of the generated video on success, or an error message on failure.
     """
     
     client = genai.Client(
@@ -230,53 +199,33 @@ def generate_video_with_veo(prompt: str, duration_seconds: int) -> str:
         try:
             operation = client.operations.get(operation)
         except Exception as e:
-            return f"轮询操作状态时出错: {e}"
+            # An error occurred while polling the operation status.
+            return f"Error while polling operation status: {e}"
     
     if operation.error:
-        print(f"❌ 视频生成失败。")
-        return f"操作失败: {operation.error.message}"
+        print(f"Video generation failed.")
+        # The operation failed.
+        return f"Operation failed: {operation.error.message}"
         
     if operation.response:
         video_uri = operation.result.generated_videos[0].video.uri
-        print(f"🎉 视频生成成功！")
+        print(f"Video generation succeeded!")
+        # The video was generated successfully.
         return video_uri
     
-    return "❌ 操作完成，但未收到预期的响应。"
+    # The operation finished, but the expected response was not received.
+    return "Operation complete, but no expected response was received."
 
 
-# --- 创建 FunctionTool 实例 ---
 firestore_storage_tool = FunctionTool(
     func=store_data_in_firestore
 )
+
 
 firestore_reader_tool = FunctionTool(
     func=read_data_from_firestore
 )
 
-
-workflow_agent = LlmAgent(
-    model='gemini-2.5-pro',
-    name='genmedia_agent',
-    instruction="""
-    You're a Creative Advertising Generation Assistant, ready to turn product images and descriptions into compelling ad videos. 
-    You have the abilities to composit images, audios, videos using your available tools.
-    If you're asked to translate into other languages, please do.
-    If anything's unclear, just ask the user for more info.
-    Important: Don't return any generated assets directly. Instead, store all results in the gs://sample-ads-creative GCS bucket. Name files using the format: [content_type]_[timestamp] (e.g., image_1703408000.png, video_1703408000.mp4).
-    After each step, report your progress to the user and ask if they'd like to proceed to the next step or modify the current one.
-    Here's our workflow:
-    1. Storyboard & Script Design: Design a 32-second creative ad video storyboard and narration script, divided into four distinct 8-second scenes.
-    2. Scene Keyframe Generation: Based on the designed storyboard and script, generate one keyframe image for each of the four scenes. Store these image files in the GCS bucket.
-    3. Video Scene Generation: Using the storyboard, script, and keyframe images, generate four 8-second video clips, one for each scene. Store these video files in the GCS bucket.
-    4. Narration Voice-over Production: Based on the script, produce narration voice-over audio for each scene. Store these audio files in the GCS bucket.
-    5. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final". Once complete, inform the user of the final video's GCS URI.
-    6. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
-    """,
-    tools=[
-       imagen, chirp3, veo, avtool, firestore_storage_tool, firestore_reader_tool,
-        #  generate_image,
-    ],
-)
 
 creation_agent = LlmAgent(
     model='gemini-2.5-pro',
@@ -350,7 +299,7 @@ ads_creative_video_agent = LlmAgent(
     1. Storyboard & Script Creation: Design a 16-second creative ad video storyboard and narration script, divided into two distinct 8-second scenes. Each scene has multiple sequences. Then design a description for first-frame image. Show storyboard and first-frame image description to user and change it according to user's feedback.
     2. First-frame Image Generation: Using the first-frame image description to generate an image.
     3. Video Scene Generation: Using the storyboard, script, generate two 8-second video clips, one for each scene.
-    4. Final Video Assembly: Combine the generated video clips and narration voice-overs into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final".ads Once complete, inform the user of the final video's GCS URI.
+    4. Final Video Assembly: Combine the generated video clips into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final".ads Once complete, inform the user of the final video's GCS URI.
     5. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
 
     When creating storyboard, generate a detailed prompt for the Veo 3 video generation model to create a creative advertisement based on the user-provided product description and labels.
@@ -397,10 +346,5 @@ ads_creative_video_agent = LlmAgent(
     tools = [generate_image_with_imagen, generate_video_with_veo, avtool, firestore_storage_tool, firestore_reader_tool]
 )
 
-# ads_creative_video_pipeline_agent = SequentialAgent(
-#     name='AdsCreativeVideoPipelineAgent',
-#     sub_agents=[creation_agent, generation_agent],
-#     description="Executes a sequence of video storyboard creation, video generation, and labeling.",
-# )
 
 root_agent = ads_creative_video_agent
