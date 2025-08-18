@@ -11,7 +11,7 @@ anyio==4.9.0
     #   starlette
 authlib==1.6.0
     # via google-adk
-cachetools==6.1.0
+cachetools
     # via google-auth
 certifi==2025.7.14
     # via
@@ -38,7 +38,7 @@ dotenv==0.9.9
     # via adk-genmedia-agent
 fastapi==0.116.1
     # via google-adk
-google-adk==1.6.1
+google-adk>=1.6.1
     # via adk-genmedia-agent
 google-api-core==2.25.1
     # via
@@ -73,7 +73,7 @@ google-auth==2.40.3
     #   google-genai
 google-auth-httplib2==0.2.0
     # via google-api-python-client
-google-cloud-aiplatform==1.103.0
+google-cloud-aiplatform
     # via google-adk
 google-cloud-appengine-logging==1.6.2
     # via google-cloud-logging
@@ -94,7 +94,7 @@ google-cloud-secret-manager==2.24.0
     # via google-adk
 google-cloud-speech==2.33.0
     # via google-adk
-google-cloud-storage==3.2.0
+google-cloud-storage
     # via
     #   google-adk
     #   google-cloud-aiplatform
@@ -182,7 +182,7 @@ opentelemetry-sdk==1.35.0
     #   google-cloud-aiplatform
     #   opentelemetry-exporter-gcp-trace
     #   opentelemetry-resourcedetector-gcp
-opentelemetry-semantic-conventions==0.55b1
+opentelemetry-semantic-conventions>=0.55b1
     # via opentelemetry-sdk
 packaging==25.0
     # via
@@ -229,7 +229,7 @@ pydantic==2.11.7
     #   google-genai
     #   mcp
     #   pydantic-settings
-pydantic-core==2.35.2
+pydantic-core
     # via pydantic
 pydantic-settings==2.10.1
     # via mcp
@@ -306,3 +306,5 @@ wrapt==1.17.2
     # via deprecated
 zipp==3.23.0
     # via importlib-metadata
+moviepy==1.0.2
+    # via ads_video_generation_agent

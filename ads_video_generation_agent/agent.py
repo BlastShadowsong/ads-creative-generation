@@ -17,6 +17,7 @@ import os
 import json
 import time
 import datetime
+import uuid
 from typing import Optional
 import vertexai
 
@@ -30,6 +31,7 @@ from google import genai
 from google.genai import types
 from google.cloud import firestore
 from google.cloud import storage
+from moviepy.editor import VideoFileClip, concatenate_videoclips
 from google.adk.tools.mcp_tool.mcp_toolset import (
     MCPToolset,
     StdioConnectionParams,
@@ -227,6 +229,82 @@ firestore_reader_tool = FunctionTool(
 )
 
 
+def merge_videos(gcs_video_uri_1: str, gcs_video_uri_2: str) -> str:
+    """
+    Downloads two video files from GCS to a local machine, concatenates them using MoviePy, and then uploads the combined video back to GCS.
+
+    Args:
+        gcs_video_uri_1 (str): 第一个要拼接的视频的 GCS URI。
+                               例如：'gs://your-bucket/video1.mp4'
+        gcs_video_uri_2 (str): 第二个要拼接的视频的 GCS URI。
+                               例如：'gs://your-bucket/video2.mp4'
+
+    Returns:
+        str: The GCS URI of the concatenated video, or None if the operation fails.
+    """
+    # 创建一个唯一的临时目录，以防多任务同时运行
+    local_dir = f'/tmp/{uuid.uuid4()}'
+    os.makedirs(local_dir, exist_ok=True)
+    
+    storage_client = storage.Client()
+    local_output_path = None
+
+    try:
+        # Step 1: 下载 GCS 视频到本地
+        video_uris = [gcs_video_uri_1, gcs_video_uri_2]
+        local_file_paths = []
+
+        print("Downloading videos from GCS...")
+        for uri in video_uris:
+            bucket_name, source_blob_name = uri.replace('gs://', '').split('/', 1)
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(source_blob_name)
+            
+            local_file_path = os.path.join(local_dir, source_blob_name)
+            blob.download_to_filename(local_file_path)
+            print(f"Downloaded {uri} to {local_file_path}")
+            local_file_paths.append(local_file_path)
+
+        # Step 2: 使用 MoviePy 拼接视频
+        print("Concatenating videos with MoviePy...")
+        clip1 = VideoFileClip(local_file_paths[0])
+        clip2 = VideoFileClip(local_file_paths[1])
+        final_clip = concatenate_videoclips([clip1, clip2])
+        
+        output_filename = f"stitched_{uuid.uuid4()}.mp4"
+        local_output_path = os.path.join(local_dir, output_filename)
+        
+        final_clip.write_videofile(local_output_path, codec="libx264")
+        print(f"Stitched video saved locally to {local_output_path}")
+
+        # Step 3: 将拼接后的视频上传到 GCS
+        # 使用第一个视频的 GCS 路径作为输出路径的基础
+        output_gcs_uri = f"gs://{bucket_name}/{output_filename}"
+        output_bucket = storage_client.bucket(bucket_name)
+        output_blob = output_bucket.blob(output_filename)
+        
+        output_blob.upload_from_filename(local_output_path)
+        print(f"Successfully uploaded stitched video to {output_gcs_uri}")
+
+        return output_gcs_uri
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+    finally:
+        # Step 4: 清理本地临时文件
+        print("Cleaning up local temporary files...")
+        if 'clip1' in locals() and clip1:
+            clip1.close()
+        if 'clip2' in locals() and clip2:
+            clip2.close()
+        
+        if local_dir and os.path.exists(local_dir):
+            import shutil
+            shutil.rmtree(local_dir)
+        print("Cleanup complete.")
+
+
 creation_agent = LlmAgent(
     model='gemini-2.5-pro',
     name='CreationAgent',
@@ -296,8 +374,8 @@ ads_creative_video_agent = LlmAgent(
     If anything's unclear, just ask the user for more info.
     After each step, report your progress to the user and ask if they'd like to proceed to the next step or modify the current one.
     Here's our workflow:
-    1. Storyboard & Script Creation: Design a 16-second creative ad video storyboard and narration script, divided into two distinct 8-second scenes. Each scene has multiple sequences. Then design a description for first-frame image. Show storyboard and first-frame image description to user and change it according to user's feedback.
-    2. First-frame Image Generation: Using the first-frame image description to generate an image.
+    1. Storyboard & Script Creation: Design a 16-second creative ad video storyboard and narration script, divided into two distinct 8-second scenes. Each scene has multiple sequences. Then design a description for thumbnail image. Show storyboard and thumbnail image description to user and change it according to user's feedback.
+    2. Thumbnail Image Generation: Using the thumbnail image description to generate an image.
     3. Video Scene Generation: Using the storyboard, script, generate two 8-second video clips, one for each scene.
     4. Final Video Assembly: Combine the generated video clips into one complete final video. Store this video file in the GCS bucket, ensuring the filename includes the keyword "final".ads Once complete, inform the user of the final video's GCS URI.
     5. Ad Tag Generation: Analyze the final video and generate relevant tags for ad placement. Store these tags as a document in the database.
@@ -343,7 +421,7 @@ ads_creative_video_agent = LlmAgent(
     Stylistic Tags: Describe the visual and auditory aesthetic (e.g., 'vintage film look', 'high-energy music', 'fast-paced editing').
     Please provide a list of 5-10 tags for each category based on the video's content.
     """,
-    tools = [generate_image_with_imagen, generate_video_with_veo, avtool, firestore_storage_tool, firestore_reader_tool]
+    tools = [generate_image_with_imagen, generate_video_with_veo, merge_videos, firestore_storage_tool, firestore_reader_tool]
 )
 
 
